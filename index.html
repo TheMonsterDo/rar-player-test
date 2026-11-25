@@ -51,7 +51,7 @@ import { openArchive, streamProblem, VIDEO_EXT, extOf } from './rar.js';
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => n >= 1048576 ? (n / 1048576).toFixed(2) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' kB' : n + ' B';
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-let readTotal = 0, archiveTotal = 0;
+let readTotal = 0, archiveTotal = 0, curStream = null;
 window.rarPlayer = { reads: [] }; // for testing / DevTools
 
 function say(text, cls = '') { $('msg').className = cls; $('msg').textContent = text; }
@@ -73,7 +73,7 @@ if ('serviceWorker' in navigator) {
     return navigator.serviceWorker.controller;
   });
   navigator.serviceWorker.addEventListener('message', (e) => {
-    if (e.data && e.data.type === 'range') logRead('video  ' + e.data.url.split('/').pop(), e.data.from, e.data.to, e.data.got, e.data.cancelled);
+    if (e.data && e.data.type === 'range' && (e.data.id === undefined || e.data.id === curStream)) logRead('video  ' + e.data.url.split('/').pop(), e.data.from, e.data.to, e.data.got, e.data.cancelled);
   });
 }
 
@@ -85,7 +85,7 @@ $('go').onclick = async () => {
   if (!urls.length) return say('Paste a .rar URL first.', 'bad');
   $('go').disabled = true; $('video').style.display = 'none'; $('video').removeAttribute('src'); $('video').load();
   $('vols').innerHTML = ''; $('files').innerHTML = ''; $('volCard').hidden = true; $('fileCard').hidden = true;
-  readTotal = 0; archiveTotal = 0; $('log').innerHTML = ''; window.rarPlayer.reads = [];
+  curStream = null; readTotal = 0; archiveTotal = 0; $('log').innerHTML = ''; $('total').textContent = ''; window.rarPlayer.reads = [];
   try {
     if (!swReady) throw new Error('This browser has no Service Worker support (or the page is not on https/localhost).');
     say('Reading archive headers...');
@@ -114,6 +114,7 @@ $('go').onclick = async () => {
       navigator.serviceWorker.addEventListener('message', h);
       sw.postMessage({ type: 'register', id, map });
     });
+    curStream = id;
     const v = $('video');
     v.style.display = 'block';
     v.onerror = () => say(`Chrome could not play ${f.name}` + (extOf(f.name) === 'mkv' ? ' (MKV: Chrome only plays MKV files whose codecs it knows, e.g. H.264/VP9 + AAC/Opus; others fail).' : '.') + ` Error: ${v.error?.message || v.error?.code}`, 'bad');

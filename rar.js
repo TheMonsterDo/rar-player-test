@@ -15,6 +15,8 @@ export async function fetchRange(url, start, end) {
   } catch (e) {
     throw new RarError('network', `Could not fetch ${url}. Most likely the host does not allow CORS (cross-origin reads), or it is offline. (${e.message})`);
   }
+  const ct = (r.headers.get('content-type') || '').toLowerCase();
+  if (ct.includes('text/html')) { r.body?.cancel(); throw new RarError('notrar', 'This link opens a web page, not the .rar file itself. Use the direct file link (it usually ends in .rar).'); }
   if (r.status === 404) throw new RarError('notfound', `Not found (404): ${url}`);
   if (r.status === 416) return new Uint8Array(0); // range starts past end of file
   if (r.status === 200) { r.body?.cancel(); throw new RarError('norange', `The host ignored the Range request (sent the whole file, status 200): ${url}. Streaming needs a host that supports HTTP Range.`); }

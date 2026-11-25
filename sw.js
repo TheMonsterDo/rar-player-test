@@ -70,7 +70,7 @@ async function serve(req, id) {
   // (the player often cancels a response early, e.g. when you seek).
   let i = 0, reader = null, cur = null;
   const report = (cancelled) => {
-    if (cur) notify({ type: 'range', url: cur.url, from: cur.from, to: cur.to, got: cur.got, cancelled });
+    if (cur) notify({ type: 'range', id, url: cur.url, from: cur.from, to: cur.to, got: cur.got, cancelled });
     cur = null;
   };
   const body = new ReadableStream({
