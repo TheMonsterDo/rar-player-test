@@ -4,6 +4,8 @@ Synthetic test archives for a browser RAR stream player (reads video inside stor
 
 All content is generated locally with ffmpeg: a `testsrc2` test pattern and a 440 Hz sine tone, 20 s, 1280x720. No third-party material.
 
+**Player:** https://themonsterdo.github.io/rar-player-test/ — add `?url=` with a direct link to a store-mode `.rar` (host must allow CORS + Range), e.g. https://themonsterdo.github.io/rar-player-test/?url=https://raw.githubusercontent.com/TheMonsterDo/rar-player-test/main/single.rar
+
 | File | What it tests |
 |---|---|
 | `single.rar` | mp4 in one store-mode (-m0) archive |

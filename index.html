@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAR Stream Player</title>
+<style>
+  :root { --bg:#f7f7f5; --fg:#1d1d1b; --muted:#6b6b66; --card:#fff; --line:#e2e2dc; --accent:#0f7b5f; --bad:#b3261e; --warn:#8a5a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ececea; --muted:#9a9a94; --card:#202020; --line:#333330; --accent:#3cc19a; --bad:#ff8a80; --warn:#f0b35a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, -apple-system, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  textarea { width: 100%; min-height: 64px; font: 13px ui-monospace, Menlo, monospace; padding: 8px; border:1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font-size: 15px; cursor: pointer; margin-top: 8px; }
+  button:disabled { opacity: .5; cursor: default; }
+  video { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; display: none; }
+  #msg { white-space: pre-wrap; }
+  .bad { color: var(--bad); } .warn { color: var(--warn); } .ok { color: var(--accent); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td, th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); word-break: break-all; }
+  #log { font: 12px ui-monospace, Menlo, monospace; max-height: 220px; overflow: auto; color: var(--muted); }
+  .hint { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>RAR Stream Player</h1>
+  <p class="sub">Plays the video inside a store-mode .rar straight from its URL. Only the bytes the player needs are read, with HTTP Range requests. Nothing is uploaded anywhere.</p>
+
+  <div class="card">
+    <label for="urls"><b>Archive URL</b> <span class="hint">(for multi-part: the .part1.rar URL, or every part URL on its own line)</span></label>
+    <textarea id="urls" spellcheck="false" placeholder="https://example.com/video.part1.rar"></textarea>
+    <button id="go">Open</button>
+    <div class="hint" style="margin-top:6px">The host must allow CORS and Range. Works with store mode (-m0) only.</div>
+  </div>
+
+  <div class="card"><div id="msg" class="hint">Paste a URL and press Open.</div></div>
+  <video id="video" controls playsinline preload="metadata"></video>
+
+  <div class="card" id="volCard" hidden><b>Parts</b><table id="vols"></table></div>
+  <div class="card" id="fileCard" hidden><b>Files in the archive</b><table id="files"></table></div>
+  <div class="card"><b>Range reads</b> <span id="total" class="hint"></span><div id="log"></div></div>
+</main>
+
+<script type="module">
+import { openArchive, streamProblem, VIDEO_EXT, extOf } from './rar.js';
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n >= 1048576 ? (n / 1048576).toFixed(2) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' kB' : n + ' B';
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let readTotal = 0, archiveTotal = 0;
+window.rarPlayer = { reads: [] }; // for testing / DevTools
+
+function say(text, cls = '') { $('msg').className = cls; $('msg').textContent = text; }
+function logRead(what, from, to, got = to - from + 1, cancelled = false) {
+  readTotal += got;
+  window.rarPlayer.reads.push({ what, from, to, got, cancelled });
+  const d = document.createElement('div');
+  d.textContent = `${what}  asked ${from}-${to}, got ${fmt(got)}${cancelled ? ' (player stopped early)' : ''}`;
+  $('log').prepend(d);
+  $('total').textContent = `${fmt(readTotal)} read so far` + (archiveTotal ? ` of ${fmt(archiveTotal)} stored video data` : '');
+}
+
+// Service worker: the bridge between <video> range requests and the archive.
+let swReady = null;
+if ('serviceWorker' in navigator) {
+  swReady = navigator.serviceWorker.register('./sw.js').then(async () => {
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
+    return navigator.serviceWorker.controller;
+  });
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'range') logRead('video  ' + e.data.url.split('/').pop(), e.data.from, e.data.to, e.data.got, e.data.cancelled);
+  });
+}
+
+const params = new URLSearchParams(location.search);
+if (params.get('url')) $('urls').value = params.getAll('url').join('\n');
+
+$('go').onclick = async () => {
+  const urls = $('urls').value.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+  if (!urls.length) return say('Paste a .rar URL first.', 'bad');
+  $('go').disabled = true; $('video').style.display = 'none'; $('video').removeAttribute('src'); $('video').load();
+  $('vols').innerHTML = ''; $('files').innerHTML = ''; $('volCard').hidden = true; $('fileCard').hidden = true;
+  readTotal = 0; archiveTotal = 0; $('log').innerHTML = ''; window.rarPlayer.reads = [];
+  try {
+    if (!swReady) throw new Error('This browser has no Service Worker support (or the page is not on https/localhost).');
+    say('Reading archive headers...');
+    const arc = await openArchive(urls.map((u) => new URL(u, location.href).toString()), (vol) => {
+      $('volCard').hidden = false;
+      $('vols').insertAdjacentHTML('beforeend', `<tr><td>${vol.format}${vol.isVolume ? ' volume' : ''}</td><td>${esc(vol.url)}</td><td>${vol.stats.requests} read(s), ${fmt(vol.stats.bytesFetched)} headers</td></tr>`);
+      logRead('header ' + vol.url.split('/').pop(), 0, vol.stats.bytesFetched - 1);
+    });
+    $('fileCard').hidden = false;
+    for (const f of arc.files) {
+      const p = streamProblem(f);
+      $('files').insertAdjacentHTML('beforeend', `<tr><td>${esc(f.name)}</td><td>${fmt(f.size)}</td><td>${f.method === 0 ? 'store' : 'compressed'}${f.encrypted ? ', password' : ''}</td><td>${f.segments.length} part(s)</td><td class="${p ? 'bad' : 'ok'}">${p ? 'cannot stream' : 'ok'}</td></tr>`);
+    }
+    const vids = arc.files.filter((f) => VIDEO_EXT[extOf(f.name)]);
+    if (!vids.length) throw new Error(arc.files.length ? 'No video file (mp4, m4v, mov, webm, mkv) in this archive.' : 'The archive lists no files.');
+    const f = vids.sort((a, b) => b.size - a.size)[0];
+    const problem = streamProblem(f);
+    if (problem) { say(problem, 'bad'); return; }
+    archiveTotal = f.size;
+
+    const sw = await swReady;
+    const id = Math.random().toString(36).slice(2, 12);
+    const map = { size: f.size, type: VIDEO_EXT[extOf(f.name)], segments: f.segments };
+    await new Promise((res) => {
+      const h = (e) => { if (e.data?.type === 'registered' && e.data.id === id) { navigator.serviceWorker.removeEventListener('message', h); res(); } };
+      navigator.serviceWorker.addEventListener('message', h);
+      sw.postMessage({ type: 'register', id, map });
+    });
+    const v = $('video');
+    v.style.display = 'block';
+    v.onerror = () => say(`Chrome could not play ${f.name}` + (extOf(f.name) === 'mkv' ? ' (MKV: Chrome only plays MKV files whose codecs it knows, e.g. H.264/VP9 + AAC/Opus; others fail).' : '.') + ` Error: ${v.error?.message || v.error?.code}`, 'bad');
+    v.onloadedmetadata = () => say(`Playing ${f.name} (${fmt(f.size)}, ${f.segments.length} part(s), ${Math.round(v.duration)} s). Seek freely: each jump reads only the bytes around it.`, 'ok');
+    v.src = `./stream/${id}/${encodeURIComponent(f.name.split('/').pop())}`;
+    say(`Opening ${f.name}...`);
+  } catch (e) {
+    say(e.message, 'bad');
+  } finally {
+    $('go').disabled = false;
+  }
+};
+if (params.get('url') && params.get('autoplay') !== '0') $('go').click();
+</script>
+</body>
+</html>
